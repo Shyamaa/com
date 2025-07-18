@@ -152,7 +152,7 @@ Ecom/
 
 ## 📄 License
 
-This project is created by MMI Softwares Pvt Ltd.
+This project is created by Shyam.
 
 ## 🤝 Contributing
 
@@ -164,4 +164,4 @@ This project is created by MMI Softwares Pvt Ltd.
 
 ## 📞 Support
 
-For support and questions, please contact MMI Softwares Pvt Ltd. 
+For support and questions, please contact Shyam. 

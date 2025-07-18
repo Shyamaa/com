@@ -278,7 +278,7 @@ For Firebase-specific issues:
 For app-specific issues:
 - Check the project README.md
 - Review the code comments
-- Contact MMI Softwares Pvt Ltd
+- Contact Shyam
 
 ## ✅ Verification Checklist
 
