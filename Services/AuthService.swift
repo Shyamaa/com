@@ -15,6 +15,7 @@ enum AuthError: LocalizedError {
     case userNotFound
     case invalidOTP
     case unknownError
+    case signUpFailed
     
     var errorDescription: String? {
         switch self {
@@ -28,6 +29,8 @@ enum AuthError: LocalizedError {
             return "Invalid OTP code"
         case .unknownError:
             return "An unknown error occurred"
+        case .signUpFailed:
+            return "Failed to create account"
         }
     }
 }
@@ -35,32 +38,53 @@ enum AuthError: LocalizedError {
 class AuthService {
     static let shared = AuthService()
     
+    private let firebaseManager = FirebaseManager.shared
     private init() {}
 
-    // MARK: - Authenticate User
+    // MARK: - Authenticate User (Async/Await)
+    func authenticateAsync(username: String, password: String) async throws -> User {
+        guard !username.isEmpty, !password.isEmpty else {
+            throw AuthError.invalidCredentials
+        }
+        
+        do {
+            return try await firebaseManager.signIn(email: username, password: password)
+        } catch {
+            throw mapFirebaseError(error)
+        }
+    }
+
+    // MARK: - Authenticate User (Combine - for backward compatibility)
     func authenticate(username: String, password: String) -> AnyPublisher<User, Error> {
         guard !username.isEmpty, !password.isEmpty else {
             return Fail(error: AuthError.invalidCredentials)
                 .eraseToAnyPublisher()
         }
         
-        return Future { promise in
-            Auth.auth().signIn(withEmail: username, password: password) { authResult, error in
-                if let error = error {
-                    let authError = self.mapFirebaseError(error)
-                    promise(.failure(authError))
-                    return
-                }
-                
-                if let user = authResult?.user {
-                    let userModel = User(firebaseUser: user)
-                    promise(.success(userModel))
-                } else {
-                    promise(.failure(AuthError.userNotFound))
+        return Future { [weak self] promise in
+            Task {
+                do {
+                    let user = try await self?.firebaseManager.signIn(email: username, password: password)
+                    promise(.success(user!))
+                } catch {
+                    promise(.failure(self?.mapFirebaseError(error) ?? AuthError.unknownError))
                 }
             }
         }
         .eraseToAnyPublisher()
+    }
+
+    // MARK: - Sign Up User
+    func signUp(email: String, password: String, username: String) async throws -> User {
+        guard !email.isEmpty, !password.isEmpty, !username.isEmpty else {
+            throw AuthError.invalidCredentials
+        }
+        
+        do {
+            return try await firebaseManager.signUp(email: email, password: password, username: username)
+        } catch {
+            throw mapFirebaseError(error)
+        }
     }
 
     // MARK: - Send OTP to User
@@ -70,14 +94,14 @@ class AuthService {
                 .eraseToAnyPublisher()
         }
         
-        // TODO: Implement actual Firebase Phone Authentication
-        // For now, using simulation for development
-        return Future { promise in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                // Simulate network delay
-                let otp = String(format: "%04d", Int.random(in: 1000...9999))
-                print("DEBUG: Generated OTP: \(otp) for \(phoneNumber)")
-                promise(.success(otp))
+        return Future { [weak self] promise in
+            Task {
+                do {
+                    let verificationID = try await self?.firebaseManager.sendPhoneVerificationCode(phoneNumber: phoneNumber)
+                    promise(.success(verificationID ?? "mock_verification_id"))
+                } catch {
+                    promise(.failure(AuthError.networkError))
+                }
             }
         }
         .eraseToAnyPublisher()
@@ -90,12 +114,12 @@ class AuthService {
                 .eraseToAnyPublisher()
         }
         
-        return Future { promise in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                // Simulate verification delay
-                if otp == expectedOTP {
-                    promise(.success(true))
-                } else {
+        return Future { [weak self] promise in
+            Task {
+                do {
+                    let success = try await self?.firebaseManager.verifyPhoneCode(verificationID: "mock_verification_id", code: otp)
+                    promise(.success(success ?? false))
+                } catch {
                     promise(.failure(AuthError.invalidOTP))
                 }
             }
@@ -105,9 +129,9 @@ class AuthService {
     
     // MARK: - Sign Out
     func signOut() -> AnyPublisher<Void, Error> {
-        return Future { promise in
+        return Future { [weak self] promise in
             do {
-                try Auth.auth().signOut()
+                try self?.firebaseManager.signOut()
                 KeychainService.shared.deleteToken()
                 promise(.success(()))
             } catch {
@@ -119,8 +143,31 @@ class AuthService {
     
     // MARK: - Check Current User
     func getCurrentUser() -> User? {
-        guard let firebaseUser = Auth.auth().currentUser else { return nil }
-        return User(firebaseUser: firebaseUser)
+        return firebaseManager.getCurrentUser()
+    }
+    
+    // MARK: - Update User Profile
+    func updateUserProfile(_ user: User) async throws {
+        try await firebaseManager.updateUserProfile(user)
+    }
+    
+    // MARK: - Get User Profile from Firestore
+    func getUserProfile(userId: String) async throws -> User? {
+        return try await firebaseManager.getUserProfile(userId: userId)
+    }
+    
+    // MARK: - Upload Profile Image
+    func uploadProfileImage(userId: String, imageData: Data) async throws -> String {
+        return try await firebaseManager.uploadProfileImage(userId: userId, imageData: imageData)
+    }
+    
+    // MARK: - Analytics
+    func logEvent(_ name: String, parameters: [String: Any]? = nil) {
+        firebaseManager.logEvent(name, parameters: parameters)
+    }
+    
+    func setUserProperty(_ value: String?, forName name: String) {
+        firebaseManager.setUserProperty(value, forName: name)
     }
     
     // MARK: - Private Methods
@@ -134,6 +181,8 @@ class AuthService {
             return .invalidCredentials
         case AuthErrorCode.networkError.rawValue:
             return .networkError
+        case AuthErrorCode.emailAlreadyInUse.rawValue:
+            return .signUpFailed
         default:
             return .unknownError
         }
